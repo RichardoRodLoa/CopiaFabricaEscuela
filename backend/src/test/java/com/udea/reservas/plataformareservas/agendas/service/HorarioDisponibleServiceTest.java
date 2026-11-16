@@ -17,6 +17,7 @@ import com.udea.reservas.plataformareservas.proveedores.model.Proveedor;
 import com.udea.reservas.plataformareservas.recursos.model.Recurso;
 import com.udea.reservas.plataformareservas.usuarios.model.User;
 import java.time.LocalTime;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,9 @@ import org.springframework.http.HttpStatus;
 
 @ExtendWith(MockitoExtension.class)
 class HorarioDisponibleServiceTest {
+
+    // Usuario dueño del proveedor de la agenda que arma crearAgenda()
+    private static final int USUARIO_DUENIO = 1;
 
     @Mock
     private IAgendaRepository agendaRepository;
@@ -74,28 +78,18 @@ class HorarioDisponibleServiceTest {
         // Act
         HorarioResponse resultado = horarioDisponibleService.crearHorario(
             agenda.getId(),
+            USUARIO_DUENIO,
             request
         );
 
         // Assert
-        assertThat(resultado)
-            .isNotNull()
-            .extracting(
-                HorarioResponse::id,
-                HorarioResponse::agendaId,
-                HorarioResponse::diaSemana,
-                HorarioResponse::horaInicio,
-                HorarioResponse::horaFin,
-                HorarioResponse::duracionSlotMin
-            )
-            .containsExactly(
-                1,
-                agenda.getId(),
-                request.diaSemana(),
-                request.horaInicio(),
-                request.horaFin(),
-                request.duracionSlotMin()
-            );
+        assertThat(resultado).isNotNull();
+        assertThat(resultado.id()).isEqualTo(1);
+        assertThat(resultado.agendaId()).isEqualTo(agenda.getId());
+        assertThat(resultado.diaSemana()).isEqualTo(request.diaSemana());
+        assertThat(resultado.horaInicio()).isEqualTo(request.horaInicio());
+        assertThat(resultado.horaFin()).isEqualTo(request.horaFin());
+        assertThat(resultado.duracionSlotMin()).isEqualTo(request.duracionSlotMin());
 
         ArgumentCaptor<HorarioDisponible> captor =
             ArgumentCaptor.forClass(HorarioDisponible.class);
@@ -117,7 +111,7 @@ class HorarioDisponibleServiceTest {
 
         // Act
         Throwable thrown = catchThrowable(() ->
-            horarioDisponibleService.crearHorario(7, request)
+            horarioDisponibleService.crearHorario(7, USUARIO_DUENIO, request)
         );
 
         // Assert
@@ -145,7 +139,7 @@ class HorarioDisponibleServiceTest {
 
         // Act
         Throwable thrown = catchThrowable(() ->
-            horarioDisponibleService.crearHorario(1, request)
+            horarioDisponibleService.crearHorario(1, USUARIO_DUENIO, request)
         );
 
         // Assert
@@ -175,7 +169,7 @@ class HorarioDisponibleServiceTest {
         );
 
         // Act
-        HorarioResponse resultado = horarioDisponibleService.crearHorario(1, request);
+        HorarioResponse resultado = horarioDisponibleService.crearHorario(1, USUARIO_DUENIO, request);
 
         // Assert
         assertThat(resultado.horaFin()).isEqualTo(LocalTime.of(10, 1));
@@ -205,7 +199,7 @@ class HorarioDisponibleServiceTest {
 
         // Act
         Throwable thrown = catchThrowable(() ->
-            horarioDisponibleService.crearHorario(1, request)
+            horarioDisponibleService.crearHorario(1, USUARIO_DUENIO, request)
         );
 
         // Assert
@@ -235,7 +229,7 @@ class HorarioDisponibleServiceTest {
         );
 
         // Act
-        horarioDisponibleService.crearHorario(1, request);
+        horarioDisponibleService.crearHorario(1, USUARIO_DUENIO, request);
 
         // Assert
         verify(horarioDisponibleRepository)
@@ -245,6 +239,163 @@ class HorarioDisponibleServiceTest {
                 LocalTime.of(13, 0),
                 LocalTime.of(12, 0)
             );
+    }
+
+    @Test
+    @DisplayName("DEF-01: rechaza con 403 definir horarios en la agenda de otro proveedor")
+    void rechazaAgendaDeOtroProveedor() {
+        // Arrange
+        Agenda agenda = crearAgenda();
+        int otroUsuario = USUARIO_DUENIO + 1;
+        when(agendaRepository.findById(agenda.getId())).thenReturn(
+            Optional.of(agenda)
+        );
+        CrearHorarioRequest request = new CrearHorarioRequest(
+            2,
+            LocalTime.of(10, 30),
+            LocalTime.of(12, 0),
+            90
+        );
+
+        // Act
+        Throwable thrown = catchThrowable(() ->
+            horarioDisponibleService.crearHorario(agenda.getId(), otroUsuario, request)
+        );
+
+        // Assert
+        assertThat(thrown)
+            .isInstanceOf(AgendaException.class)
+            .hasMessage("No puedes modificar una agenda que no te pertenece.");
+        assertThat(((AgendaException) thrown).getStatus())
+            .isEqualTo(HttpStatus.FORBIDDEN);
+        verify(horarioDisponibleRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Lista los bloques de la agenda propia con sus datos de disponibilidad")
+    void listaHorariosDeLaAgendaPropia() {
+        // Arrange
+        Agenda agenda = crearAgenda();
+        List<HorarioDisponible> horarios = List.of(
+            crearHorario(agenda, 10, 1, LocalTime.of(8, 0), LocalTime.of(12, 0), 30),
+            crearHorario(agenda, 11, 3, LocalTime.of(14, 0), LocalTime.of(18, 0), 60)
+        );
+        when(agendaRepository.findById(agenda.getId())).thenReturn(
+            Optional.of(agenda)
+        );
+        when(
+            horarioDisponibleRepository.findAllByAgenda_IdOrderByDiaSemanaAscHoraInicioAsc(
+                agenda.getId()
+            )
+        ).thenReturn(horarios);
+
+        // Act
+        List<HorarioResponse> resultado = horarioDisponibleService.listarHorarios(
+            agenda.getId(),
+            USUARIO_DUENIO
+        );
+
+        // Assert
+        assertThat(resultado).hasSize(2);
+        assertThat(resultado)
+            .extracting(HorarioResponse::id)
+            .containsExactly(10, 11);
+        assertThat(resultado.get(0).agendaId()).isEqualTo(agenda.getId());
+        assertThat(resultado.get(0).diaSemana()).isEqualTo(1);
+        assertThat(resultado.get(0).horaInicio()).isEqualTo(LocalTime.of(8, 0));
+        assertThat(resultado.get(0).horaFin()).isEqualTo(LocalTime.of(12, 0));
+        assertThat(resultado.get(0).duracionSlotMin()).isEqualTo(30);
+        assertThat(resultado.get(1).duracionSlotMin()).isEqualTo(60);
+    }
+
+    @Test
+    @DisplayName("Lista vacía cuando la agenda no tiene bloques definidos")
+    void listaHorariosVaciaCuandoLaAgendaNoTieneBloques() {
+        // Arrange
+        Agenda agenda = crearAgenda();
+        when(agendaRepository.findById(agenda.getId())).thenReturn(
+            Optional.of(agenda)
+        );
+        when(
+            horarioDisponibleRepository.findAllByAgenda_IdOrderByDiaSemanaAscHoraInicioAsc(
+                agenda.getId()
+            )
+        ).thenReturn(List.of());
+
+        // Act
+        List<HorarioResponse> resultado = horarioDisponibleService.listarHorarios(
+            agenda.getId(),
+            USUARIO_DUENIO
+        );
+
+        // Assert
+        assertThat(resultado).isEmpty();
+        verify(horarioDisponibleRepository)
+            .findAllByAgenda_IdOrderByDiaSemanaAscHoraInicioAsc(agenda.getId());
+    }
+
+    @Test
+    @DisplayName("Lanzar excepción 404 al listar los horarios de una agenda inexistente")
+    void lanzaExcepcionAlListarAgendaNoExiste() {
+        // Arrange
+        when(agendaRepository.findById(7)).thenReturn(Optional.empty());
+
+        // Act
+        Throwable thrown = catchThrowable(() ->
+            horarioDisponibleService.listarHorarios(7, USUARIO_DUENIO)
+        );
+
+        // Assert
+        assertThat(thrown)
+            .isInstanceOf(AgendaException.class)
+            .hasMessage("La agenda con ID 7 no existe.");
+        assertThat(((AgendaException) thrown).getStatus())
+            .isEqualTo(HttpStatus.NOT_FOUND);
+        verify(horarioDisponibleRepository, never())
+            .findAllByAgenda_IdOrderByDiaSemanaAscHoraInicioAsc(any());
+    }
+
+    @Test
+    @DisplayName("Rechaza con 403 listar los horarios de la agenda de otro proveedor")
+    void rechazaListarAgendaDeOtroProveedor() {
+        // Arrange
+        Agenda agenda = crearAgenda();
+        int otroUsuario = USUARIO_DUENIO + 1;
+        when(agendaRepository.findById(agenda.getId())).thenReturn(
+            Optional.of(agenda)
+        );
+
+        // Act
+        Throwable thrown = catchThrowable(() ->
+            horarioDisponibleService.listarHorarios(agenda.getId(), otroUsuario)
+        );
+
+        // Assert
+        assertThat(thrown)
+            .isInstanceOf(AgendaException.class)
+            .hasMessage("No puedes consultar una agenda que no te pertenece.");
+        assertThat(((AgendaException) thrown).getStatus())
+            .isEqualTo(HttpStatus.FORBIDDEN);
+        verify(horarioDisponibleRepository, never())
+            .findAllByAgenda_IdOrderByDiaSemanaAscHoraInicioAsc(any());
+    }
+
+    private HorarioDisponible crearHorario(
+        Agenda agenda,
+        Integer id,
+        Integer diaSemana,
+        LocalTime horaInicio,
+        LocalTime horaFin,
+        Integer duracionSlotMin
+    ) {
+        return HorarioDisponible.builder()
+            .id(id)
+            .agenda(agenda)
+            .diaSemana(diaSemana)
+            .horaInicio(horaInicio)
+            .horaFin(horaFin)
+            .duracionSlotMin(duracionSlotMin)
+            .build();
     }
 
     private Agenda crearAgenda() {

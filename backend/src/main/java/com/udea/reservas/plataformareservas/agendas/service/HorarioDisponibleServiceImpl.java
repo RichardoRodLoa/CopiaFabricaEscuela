@@ -12,6 +12,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Service
 @RequiredArgsConstructor
 public class HorarioDisponibleServiceImpl implements HorarioDisponibleService {
@@ -24,6 +26,7 @@ public class HorarioDisponibleServiceImpl implements HorarioDisponibleService {
     @Transactional
     public HorarioResponse crearHorario(
         Integer agendaId,
+        Integer usuarioId,
         CrearHorarioRequest request
     ) {
         Agenda agenda = agendaRepository
@@ -34,6 +37,14 @@ public class HorarioDisponibleServiceImpl implements HorarioDisponibleService {
                     HttpStatus.NOT_FOUND
                 )
             );
+
+        // Regla (DEF-01): solo el proveedor dueño de la agenda puede modificarla
+        if (!agenda.getProveedor().getUsuario().getId().equals(usuarioId)) {
+            throw new AgendaException(
+                "No puedes modificar una agenda que no te pertenece.",
+                HttpStatus.FORBIDDEN
+            );
+        }
 
         // Regla: la hora de fin debe ser posterior a la hora de inicio
         if (!request.horaFin().isAfter(request.horaInicio())) {
@@ -75,5 +86,31 @@ public class HorarioDisponibleServiceImpl implements HorarioDisponibleService {
             guardado.getHoraFin(),
             guardado.getDuracionSlotMin()
         );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<HorarioResponse> listarHorarios(Integer agendaId, Integer usuarioId) {
+        Agenda agenda = agendaRepository.findById(agendaId)
+                .orElseThrow(() -> new AgendaException(
+                        "La agenda con ID " + agendaId + " no existe.",
+                        HttpStatus.NOT_FOUND
+                ));
+
+        if (!agenda.getProveedor().getUsuario().getId().equals(usuarioId)) {
+            throw new AgendaException(
+                    "No puedes consultar una agenda que no te pertenece.",
+                    HttpStatus.FORBIDDEN
+            );
+        }
+
+        return horarioRepository
+                .findAllByAgenda_IdOrderByDiaSemanaAscHoraInicioAsc(agendaId)
+                .stream()
+                .map(h -> new HorarioResponse(
+                        h.getId(), agenda.getId(), h.getDiaSemana(),
+                        h.getHoraInicio(), h.getHoraFin(), h.getDuracionSlotMin()
+                ))
+                .toList();
     }
 }
